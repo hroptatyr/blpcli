@@ -1,0 +1,13 @@
+Usage: blpcli COMMAND
+
+Interface the bbcom server.
+
+
+Usage: blpcli get [OPTION]...
+
+Get reference data.
+
+
+Usage: blpcli sub [OPTION]...
+
+Subscribe.

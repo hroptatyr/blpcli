@@ -27,6 +27,16 @@ version.c: version.c.in $(top_builddir)/.version
 		yuck$(EXEEXT) scmver --ignore-noscm --force -o $@ \
 			--use-reference --reference $(top_builddir)/.version $<
 
+bin_PROGRAMS += blpcli
+blpcli_SOURCES = blpcli.c blpcli.yuck
+blpcli_SOURCES += nifty.h
+blpcli_CPPFLAGS = $(AM_CPPFLAGS)
+blpcli_CPPFLAGS += $(blpapi_CFLAGS)
+blpcli_LDFLAGS = $(AM_LDFLAGS)
+blpcli_LDFLAGS += $(blpapi_LIBS)
+BUILT_SOURCES += blpcli.yucc
+
+
 ## yuck rule
 SUFFIXES += .yuck
 SUFFIXES += .yucc
