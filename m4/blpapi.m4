@@ -57,8 +57,13 @@ code that links to the blpapi.  I see no point in continuing ...
 			## they're still an idiot
 			:
 		else
-			blpapi_CFLAGS="-I${with_blpapi}/include"
-			blpapi_LIBS="-L${with_blpapi}/Linux -L${with_blpapi}/Darwin -L${with_blpapi}/SunOS -lblpapi3_64"
+			## obtain an absolute blpapi path
+			olddir=`pwd`
+			cd "${with_blpapi}" && abs_blpapi=`pwd`
+			cd "${olddir}"
+
+			blpapi_CFLAGS="-I${abs_blpapi}/include"
+			blpapi_LIBS="-L${abs_blpapi}/Linux -L${abs_blpapi}/Darwin -L${abs_blpapi}/SunOS -lblpapi3_64"
 		fi
 	fi
 
