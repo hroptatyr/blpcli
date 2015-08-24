@@ -47,24 +47,33 @@ Path to top level directory of blpapi.])],
 Not allowed to use blpapi.  However, this project is all about
 code that links to the blpapi.  I see no point in continuing ...
 ])
-	elif test "${blpapi_CFLAGS}${blpapi_LIBS}" = ""; then
+	elif test "${blpapi_CFLAGS}${blpapi_LIBS}" = "" -a \
+		"${with_blpapi}" != "yes" -a "${with_blpapi}" != "unset"; then
 		## preset blpapi_CFLAGS/blpapi_LIBS with the value provided
 		## by --with-blpapi
-		if test "${with_blpapi}" = "yes"; then
-			## don't bother, user is an idiot
-			:
-		elif test "${with_blpapi}" = "unset"; then
-			## they're still an idiot
-			:
-		else
-			## obtain an absolute blpapi path
-			olddir=`pwd`
-			cd "${with_blpapi}" && abs_blpapi=`pwd`
-			cd "${olddir}"
 
-			blpapi_CFLAGS="-I${abs_blpapi}/include"
-			blpapi_LIBS="-L${abs_blpapi}/Linux -L${abs_blpapi}/Darwin -L${abs_blpapi}/SunOS -lblpapi3_64"
+		## obtain an absolute blpapi path
+		olddir=`pwd`
+		cd "${with_blpapi}" && abs_blpapi=`pwd`
+		cd "${olddir}"
+
+		if false; then
+			:
+		elif test -d "${abs_blpapi}/Linux" -a \
+			-x "${abs_blpapi}/Linux"; then
+			blpapi_libdir="${abs_blpapi}/Linux"
+		elif test -d "${abs_blpapi}/Darwin" -a \
+			-x "${abs_blpapi}/Darwin"; then
+			blpapi_libdir="${abs_blpapi}/Darwin"
+		elif test -d "${abs_blpapi}/SunOS" -a \
+			-x "${abs_blpapi}/SunOS"; then
+			blpapi_libdir="${abs_blpapi}/SunOS"
+		else
+			blpapi_libdir="${abs_blpapi}"
 		fi
+
+		blpapi_CFLAGS="-I${abs_blpapi}/include"
+		blpapi_LIBS="-L${blpapi_libdir} -Wl,-rpath,${blpapi_libdir} -lblpapi3_64"
 	fi
 
 	## quick test if it's actually working
