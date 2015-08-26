@@ -45,6 +45,8 @@
 #include <signal.h>
 #include <setjmp.h>
 #include <errno.h>
+#include <sys/time.h>
+#include <time.h>
 #include <blpapi_correlationid.h>
 #include <blpapi_element.h>
 #include <blpapi_event.h>
@@ -91,6 +93,56 @@ error(const char *fmt, ...)
 	return;
 }
 
+static size_t
+dt_strf_d(char *restrict buf, size_t bsz, int days_since_epoch)
+{
+	const unsigned int bas = 19359U/*#days between 1917-01-00 and epoch*/;
+	unsigned int epo = days_since_epoch + bas;
+	unsigned int y, m, d;
+	unsigned int tmp;
+
+	/* start with a guess */
+	y = epo / 365U;
+	tmp = y * 365U + y / 4U;
+	if (UNLIKELY(tmp >= epo)) {
+		y--;
+		tmp = y * 365U + y / 4U;
+	}
+	/* repurpose tmp to hold the doy */
+	tmp = epo - tmp;
+	/* now the trimester algo to go from doy to m+d */
+	if ((tmp -= 1U + !(y % 4U)/*__leapp(y)*/) < 59U) {
+		/* 3rd trimester */
+		tmp += !(y % 4U);
+	} else if ((tmp += 2U) < 153U + 61U) {
+		/* 1st trimester */
+		;
+	} else {
+		/* 2nd trimester */
+		tmp += 30U;
+	}
+
+	m = 2 * tmp / 61U;
+	d = 2 * tmp % 61U;
+
+	m = m + 1 - (m >= 7U);
+	d = d / 2 + 1U;
+	y += 1917U;
+	return snprintf(buf, bsz, "%04u-%02u-%02u", y, m, d);
+}
+
+static size_t
+dt_strf_t(char *restrict buf, size_t bsz, unsigned int tim, unsigned int nsec)
+{
+	unsigned int M, S;
+
+	S = tim % 60U;
+	tim /= 60U;
+	M = tim % 60U;
+	tim /= 60U;
+	return snprintf(buf, bsz, "%02u:%02u:%02u.%09uZ", tim, M, S, nsec);
+}
+
 
 static int
 wrcb(const char *data, int len, void *f)
@@ -99,19 +151,85 @@ wrcb(const char *data, int len, void *f)
 }
 
 static void
+dump_rsp(const yuck_t argi[static 1U], blpapi_Message_t *msg)
+{
+	char *const *tops = argi->topic_args;
+	char *const *flds = argi->field_args;
+	blpapi_Element_t *els;
+
+	if (UNLIKELY((els = blpapi_Message_elements(msg)) == NULL)) {
+		goto nah;
+	}
+
+nah:
+	fputc('\n', stdout);
+	return;
+}
+
+static void
+dump_pub(const yuck_t argi[static 1U], blpapi_Message_t *msg)
+{
+	char *const *tops = argi->topic_args;
+	char *const *flds = argi->field_args;
+	blpapi_Element_t *els;
+	blpapi_CorrelationId_t cid;
+	size_t ix;
+
+	cid = blpapi_Message_correlationId(msg, 0);
+	if (UNLIKELY(cid.valueType != BLPAPI_CORRELATION_TYPE_INT)) {
+		goto nop;
+	}
+	/* otherwise CID holds the index into TOPS */
+	if (UNLIKELY((ix = cid.value.intValue) <= 0)) {
+		goto nop;
+	}
+
+	ix--;
+	fputs(tops[ix], stdout);
+nop:
+	fputc('\n', stdout);
+	return;
+}
+
+static void
 dump_evs(const struct ctx_s ctx[static 1U], blpapi_MessageIterator_t *iter)
 {
+	static int today;
+	static char stmp[32U];
 	blpapi_Message_t *msg;
 	const yuck_t *argi = ctx->argi;
 
-	while (!blpapi_MessageIterator_next(iter, &msg)) {
-		blpapi_Element_t *els;
-		blpapi_CorrelationId_t cid;
+	with (struct timespec tsp) {
+		int tspd;
+		unsigned int tspt;
 
-		els = blpapi_Message_elements(msg);
-		cid = blpapi_Message_correlationId(msg, 0);
-		blpapi_Element_print(els, wrcb, stdout, 0, 4);
-		printf("%s\t%zu\t%zu\n", argi->topic_args[cid.value.intValue], blpapi_Element_numElements(els), blpapi_Element_numValues(els));
+		clock_gettime(CLOCK_REALTIME, &tsp);
+		tspd = tsp.tv_sec / 86400;
+		tspt = tsp.tv_sec % 86400;
+		if (UNLIKELY(today < tspd)) {
+			/* oh no, we need to work a bit */
+			today = tspd;
+			dt_strf_d(stmp, sizeof(stmp), tspd);
+			stmp[10U] = 'T';
+		}
+		/* always fill in time-of-day and nanos */
+		dt_strf_t(stmp + 11U, sizeof(stmp) - 11U, tspt, tsp.tv_nsec);
+	}
+
+	while (!blpapi_MessageIterator_next(iter, &msg)) {
+		fputs(stmp, stdout);
+		fputc('\t', stdout);
+		switch (argi->cmd) {
+		case BLPCLI_CMD_GET:
+			dump_rsp(argi, msg);
+			break;
+		case BLPCLI_CMD_SUB:
+			dump_pub(argi, msg);
+			break;
+		default:
+			fputc('\n', stdout);
+			break;
+		}
 	}
 	return;
 }
@@ -206,7 +324,7 @@ Error: cannot instantiate subscriptions");
 		blpapi_CorrelationId_t cid = {
 			.size = sizeof(cid),
 			.valueType = BLPAPI_CORRELATION_TYPE_INT,
-			.value.intValue = i,
+			.value.intValue = i + 1U,
 		};
 
 		blpapi_SubscriptionList_add(
