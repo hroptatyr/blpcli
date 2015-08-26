@@ -123,6 +123,13 @@ svc_sta_get(blpapi_Session_t *s, const struct yuck_cmd_get_s argi[static 1U])
 	static const char svc_ref[] = "//blp/refdata";
 	blpapi_Service_t *svc;
 	blpapi_Request_t *req;
+	blpapi_Element_t *els;
+	blpapi_CorrelationId_t cid = {
+		.size = sizeof(cid),
+		.valueType = BLPAPI_CORRELATION_TYPE_INT,
+		.value.intValue = 1,
+	};
+	int rc = 0;
 
 	if (UNLIKELY(blpapi_Session_openService(s, svc_ref))) {
 		errno = 0, error("\
@@ -133,25 +140,50 @@ Error: cannot open service %s", svc_ref);
 	blpapi_Session_getService(s, &svc, svc_ref);
 	blpapi_Service_createRequest(svc, &req, "ReferenceDataRequest");
 
-	with (blpapi_Element_t *e = blpapi_Request_elements(req), *sub) {
-		blpapi_Element_getElement(e, &sub, "securities", 0);
-		blpapi_Element_setValueString(
-			sub, "CBK GY Equity", BLPAPI_ELEMENT_INDEX_END);
-		blpapi_Element_getElement(e, &sub, "fields", 0);
-		blpapi_Element_setValueString(
-			sub, "LEGAL_ENTITY_IDENTIFIER", BLPAPI_ELEMENT_INDEX_END);
+	if (UNLIKELY((els = blpapi_Request_elements(req)) == NULL)) {
+		errno = 0, error("\
+Error: cannot acquire request elements");
+		rc = -1;
+		goto out;
 	}
 
-	blpapi_CorrelationId_t cid = {
-		.size = sizeof(cid),
-		.valueType = BLPAPI_CORRELATION_TYPE_INT,
-		.value.intValue = 1,
-	};
+	with (blpapi_Element_t *secs) {
+		blpapi_Element_getElement(els, &secs, "securities", 0);
+		if (UNLIKELY(secs == NULL)) {
+			errno = 0, error("\
+Error: cannot fill securities into request");
+			rc = -1;
+			goto out;
+		}
+		for (size_t i = 0U; i < argi->topic_nargs; i++) {
+			const char *top = argi->topic_args[i];
+
+			blpapi_Element_setValueString(
+				secs, top, BLPAPI_ELEMENT_INDEX_END);
+		}
+	}
+
+	with (blpapi_Element_t *flds) {
+		blpapi_Element_getElement(els, &flds, "fields", 0);
+		if (UNLIKELY(flds == NULL)) {
+			errno = 0, error("\
+Error: cannot fill fields into request");
+			rc = -1;
+			goto out;
+		}
+		for (size_t i = 0U; i < argi->field_nargs; i++) {
+			const char *fld = argi->field_args[i];
+
+			blpapi_Element_setValueString(
+				flds, fld, BLPAPI_ELEMENT_INDEX_END);
+		}
+	}
 
 	/* finally send the whole shebang */
 	blpapi_Session_sendRequest(s, req, &cid, 0, 0, 0, 0);
+out:
 	blpapi_Request_destroy(req);
-	return 0;
+	return rc;
 }
 
 static int
