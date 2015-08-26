@@ -75,6 +75,9 @@ struct ctx_s {
 	int rc;
 };
 
+#define LOG(x)		fputs(x, stderr)
+#define LOGF(fmt, ...)	fprintf(stderr, fmt, __VA_ARGS__)
+
 
 static __attribute__((format(printf, 1, 2))) void
 error(const char *fmt, ...)
@@ -410,7 +413,7 @@ Error: cannot open service %s", svc);
 		return -1;
 	}
 	/* success, advance state */
-	puts("ST<-SES");
+	LOG("ST<-SES\n");
 	ctx->st = ST_SES;
 	return 0;
 }
@@ -419,7 +422,7 @@ static int
 sess_end(blpapi_Session_t *UNUSED(sess), struct ctx_s *ctx)
 {
 	/* indicate success */
-	puts("ST<-FIN");
+	LOG("ST<-FIN\n");
 	ctx->st = ST_FIN;
 	return 0;
 }
@@ -457,7 +460,7 @@ svc_sta(blpapi_Session_t *sess, struct ctx_s *ctx)
 		return -1;
 	}
 	/* success */
-	puts("ST<-SVC");
+	LOG("ST<-SVC\n");
 	ctx->st = ST_SVC;
 	return 0;
 }
@@ -492,7 +495,7 @@ sub_sta(blpapi_Session_t *UNUSED(sess), struct ctx_s *ctx)
 	}
 
 	/* indicate success */
-	puts("ST<-SUB");
+	LOG("ST<-SUB\n");
 	ctx->st = ST_SUB;
 	return 0;
 }
@@ -640,11 +643,11 @@ Error: cannot start session");
 			case SIGQUIT:
 			case SIGINT:
 			case SIGPIPE:
-				fputs("GOT INT\n", stderr);
+				LOG("GOT INT\n");
 				goto out;
 
 			default:
-				fprintf(stderr, "GOT SIG %d\n", sig);
+				LOGF("GOT SIG %d\n", sig);
 				break;
 			}
 		}
