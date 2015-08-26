@@ -2,6 +2,9 @@ Usage: blpcli COMMAND
 
 Interface the bbcom server.
 
+  -F, --field=FLD...    Request field(s) FLD, can be used several times.
+  -T, --topic=TOP...    Request topic(s) TOP, can be used several times.
+
 
 Usage: blpcli get [OPTION]...
 

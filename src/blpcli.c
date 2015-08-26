@@ -54,6 +54,8 @@
 #include <blpapi_subscriptionlist.h>
 #include "nifty.h"
 
+#include "blpcli.yucc"
+
 struct ctx_s {
 	enum {
 		ST_UNK,
@@ -66,7 +68,7 @@ struct ctx_s {
 
 		ST_FIN,
 	} st;
-	const void *argi;
+	const yuck_t *argi;
 	int rc;
 };
 
@@ -97,22 +99,24 @@ wrcb(const char *data, int len, void *f)
 }
 
 static void
-dump_evs(blpapi_Session_t *UNUSED(sess), blpapi_MessageIterator_t *iter)
+dump_evs(const struct ctx_s ctx[static 1U], blpapi_MessageIterator_t *iter)
 {
 	blpapi_Message_t *msg;
+	const yuck_t *argi = ctx->argi;
 
 	while (!blpapi_MessageIterator_next(iter, &msg)) {
 		blpapi_Element_t *els;
+		blpapi_CorrelationId_t cid;
 
 		els = blpapi_Message_elements(msg);
+		cid = blpapi_Message_correlationId(msg, 0);
 		blpapi_Element_print(els, wrcb, stdout, 0, 4);
+		printf("%s\t%zu\t%zu\n", argi->topic_args[cid.value.intValue], blpapi_Element_numElements(els), blpapi_Element_numValues(els));
 	}
 	return;
 }
 
 
-#include "blpcli.yucc"
-
 static int
 svc_sta_get(blpapi_Session_t *s, const struct yuck_cmd_get_s argi[static 1U])
 {
@@ -154,16 +158,6 @@ static int
 svc_sta_sub(blpapi_Session_t *s, const struct yuck_cmd_sub_s argi[static 1U])
 {
 	blpapi_SubscriptionList_t *subs;
-	blpapi_CorrelationId_t cid = {
-		.size = sizeof(cid),
-		.valueType = BLPAPI_CORRELATION_TYPE_INT,
-		.value.intValue = 2,
-	};
-	const char *flds[] = {
-		"NEWS_SENTIMENT_RT",
-		"TIME_OF_LAST_NEWS_STORY",
-		"WIRE_OF_LAST_NEWS_STORY",
-	};
 	const char *opts[] = {};
 
 	if (UNLIKELY((subs = blpapi_SubscriptionList_create()) == NULL)) {
@@ -173,14 +167,24 @@ Error: cannot instantiate subscriptions");
 	}
 
 	/* subscribe */
-	blpapi_SubscriptionList_add(
-		subs, "CBK GR Equity",
-		&cid, flds, opts, countof(flds), countof(opts));
+	for (size_t i = 0U; i < argi->topic_nargs; i++) {
+		const char *top = argi->topic_args[i];
+		const char **flds = deconst(argi->field_args);
+		const size_t nflds = argi->field_nargs;
+		blpapi_CorrelationId_t cid = {
+			.size = sizeof(cid),
+			.valueType = BLPAPI_CORRELATION_TYPE_INT,
+			.value.intValue = i,
+		};
+
+		blpapi_SubscriptionList_add(
+			subs, top, &cid, flds, opts, nflds, countof(opts));
+	}
 	if (blpapi_Session_subscribe(s, subs, NULL, NULL, 0)) {
 		errno = 0, error("\
 Error: cannot subscribe");
 	}
-	//blpapi_SubscriptionList_destroy(subs);
+	blpapi_SubscriptionList_destroy(subs);
 	return 0;
 }
 
@@ -375,7 +379,7 @@ beef(blpapi_Event_t *e, blpapi_Session_t *sess, void *ctx)
 	case BLPAPI_EVENTTYPE_PARTIAL_RESPONSE:
 	case BLPAPI_EVENTTYPE_RESPONSE:
 	case BLPAPI_EVENTTYPE_SUBSCRIPTION_DATA:
-		dump_evs(sess, iter);
+		dump_evs(ctx, iter);
 		break;
 	default:
 		/* uh oh */
