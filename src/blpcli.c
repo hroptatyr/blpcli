@@ -47,6 +47,7 @@
 #include <errno.h>
 #include <sys/time.h>
 #include <time.h>
+#include <pthread.h>
 #include <blpapi_correlationid.h>
 #include <blpapi_element.h>
 #include <blpapi_event.h>
@@ -74,8 +75,6 @@ struct ctx_s {
 	int rc;
 };
 
-static jmp_buf gjmp;
-
 
 static __attribute__((format(printf, 1, 2))) void
 error(const char *fmt, ...)
@@ -90,6 +89,32 @@ error(const char *fmt, ...)
 		fputs(strerror(errno), stderr);
 	}
 	fputc('\n', stderr);
+	return;
+}
+
+static void
+block_sigs(void)
+{
+	sigset_t fatal_signal_set[1];
+
+	sigemptyset(fatal_signal_set);
+	sigaddset(fatal_signal_set, SIGHUP);
+	sigaddset(fatal_signal_set, SIGQUIT);
+	sigaddset(fatal_signal_set, SIGINT);
+	sigaddset(fatal_signal_set, SIGTERM);
+	sigaddset(fatal_signal_set, SIGXCPU);
+	sigaddset(fatal_signal_set, SIGXFSZ);
+	(void)pthread_sigmask(SIG_BLOCK, fatal_signal_set, (sigset_t*)NULL);
+	return;
+}
+
+static void
+unblock_sigs(void)
+{
+	sigset_t empty_signal_set[1];
+
+	sigemptyset(empty_signal_set);
+	(void)pthread_sigmask(SIG_SETMASK, empty_signal_set, (sigset_t*)NULL);
 	return;
 }
 
@@ -530,6 +555,12 @@ beef(blpapi_Event_t *e, blpapi_Session_t *sess, void *ctx)
 	case BLPAPI_EVENTTYPE_RESPONSE:
 	case BLPAPI_EVENTTYPE_SUBSCRIPTION_DATA:
 		dump_evs(ctx, iter);
+
+		if (UNLIKELY(typ == BLPAPI_EVENTTYPE_RESPONSE)) {
+			/* that was the final response, innit?
+			 * pretend we pressed C-c */
+			kill(getpid(), SIGINT);
+		}
 		break;
 	default:
 		/* uh oh */
@@ -540,23 +571,10 @@ beef(blpapi_Event_t *e, blpapi_Session_t *sess, void *ctx)
 	return;
 }
 
-static void
-int_handler(int sig, siginfo_t *UNUSED(nfo), void *UNUSED(ctx))
-{
-	puts("INT HANDLER");
-	longjmp(gjmp, sig);
-	return;
-}
-
 int
 main(int argc, char *argv[])
 {
 	static yuck_t argi[1U];
-	static struct sigaction hdl_int = {
-		.sa_flags = SA_SIGINFO,
-		.sa_sigaction = int_handler,
-	};
-	static struct sigaction old_int;
 	static struct ctx_s ctx = {.argi = argi};
 	blpapi_Session_t *sess;
 	int rc = 0;
@@ -568,15 +586,6 @@ main(int argc, char *argv[])
 Fatal: cannot parse options");
 		rc = 1;
 		goto out;
-	} else if (setjmp(gjmp)) {
-		/* go straight to the emergency exit */
-		rc = ctx.rc;
-		goto out;
-	} else if (sigaction(SIGINT, &hdl_int, &old_int) < 0) {
-		error("\
-Fatal: cannot install handler for SIGINT");
-		rc = 1;
-		goto out;
 	}
 
 	/* barf early if there's no command */
@@ -586,6 +595,9 @@ Error: no command given.  See --help.");
 		rc = 1;
 		goto out;
 	}
+
+	/* we can't do with interruptions */
+	block_sigs();
 
 	/* get ourselves a session handle */
 	with (blpapi_SessionOptions_t *opt) {
@@ -603,7 +615,7 @@ Error: cannot create session options");
 		blpapi_SessionOptions_setServerPort(opt, 8194);
 		blpapi_SessionOptions_setMaxEventQueueSize(opt, 8192);
 
-		sess = blpapi_Session_create(opt, &beef, NULL, &ctx);
+		sess = blpapi_Session_create(opt, beef, NULL, &ctx);
 		blpapi_SessionOptions_destroy(opt);
 	}
 
@@ -621,12 +633,25 @@ Error: cannot start session");
 	}
 
 	/* sleep and let the bloomberg thread do the hard work */
-	pause();
+	with (sigset_t sigs[1U]) {
+		sigfillset(sigs);
+		for (int sig; !sigwait(sigs, &sig);) {
+			switch (sig) {
+			case SIGQUIT:
+			case SIGINT:
+			case SIGPIPE:
+				fputs("GOT INT\n", stderr);
+				goto out;
+
+			default:
+				fprintf(stderr, "GOT SIG %d\n", sig);
+				break;
+			}
+		}
+	}
 
 out:
-	/* establish old C-c handler */
-	(void)sigaction(SIGINT, &old_int, NULL);
-
+	unblock_sigs();
 	if (sess != NULL) {
 		blpapi_Session_stop(sess);
 		blpapi_Session_destroy(sess);
