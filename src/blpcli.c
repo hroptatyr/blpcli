@@ -173,9 +173,83 @@ dt_strf_t(char *restrict buf, size_t bsz, unsigned int tim, unsigned int nsec)
 
 
 static int
-wrcb(const char *data, int len, void *f)
+dump_Element(const blpapi_Element_t *e, FILE *whither)
 {
-	return fwrite(data, 1, len, f);
+	int rc = 0;
+
+	switch (blpapi_Element_datatype(e)) {
+		union {
+			blpapi_Int32_t i32;
+			blpapi_Int64_t i64;
+			blpapi_Float32_t f32;
+			blpapi_Float64_t f64;
+			blpapi_Datetime_t dt;
+			blpapi_HighPrecisionDatetime_t hp;
+		} tmp;
+
+	case BLPAPI_DATATYPE_INT32:
+		rc = blpapi_Element_getValueAsInt32(e, &tmp.i32, 0U);
+		fprintf(whither, "%i", tmp.i32);
+		break;
+	case BLPAPI_DATATYPE_INT64:
+		rc = blpapi_Element_getValueAsInt64(e, &tmp.i64, 0U);
+		fprintf(whither, "%lli", tmp.i64);
+		break;
+	case BLPAPI_DATATYPE_FLOAT32:
+		rc = blpapi_Element_getValueAsFloat32(e, &tmp.f32, 0U);
+		fprintf(whither, "%f", tmp.f32);
+		break;
+	case BLPAPI_DATATYPE_FLOAT64:
+		rc = blpapi_Element_getValueAsFloat64(e, &tmp.f64, 0U);
+		fprintf(whither, "%f", tmp.f64);
+		break;
+	case BLPAPI_DATATYPE_DATETIME:
+	case BLPAPI_DATATYPE_DATE:
+	case BLPAPI_DATATYPE_TIME:
+		rc = blpapi_Element_getValueAsHighPrecisionDatetime(
+			e, &tmp.hp, 0U);
+		if (rc) {
+			break;
+		}
+		if (tmp.hp.datetime.parts & BLPAPI_DATETIME_YEAR_PART) {
+			fprintf(whither, "%04hu-%02hhu-%02hhu",
+				tmp.hp.datetime.year,
+				tmp.hp.datetime.month,
+				tmp.hp.datetime.day);
+			if (tmp.hp.datetime.parts & BLPAPI_DATETIME_TIME_PART) {
+				fputc('T', whither);
+			}
+		}
+		if (tmp.hp.datetime.parts & BLPAPI_DATETIME_SECONDS_PART) {
+			fprintf(whither, "%02hhu:%02hhu:%02hhu",
+				tmp.hp.datetime.hours,
+				tmp.hp.datetime.minutes,
+				tmp.hp.datetime.seconds);
+			if (tmp.hp.datetime.parts &
+			    BLPAPI_DATETIME_FRACSECONDS_PART) {
+				fputc('.', whither);
+			}
+		}
+		if (tmp.hp.datetime.parts & BLPAPI_DATETIME_FRACSECONDS_PART) {
+			fprintf(whither, "%03hu%09u",
+				tmp.hp.datetime.milliSeconds,
+				tmp.hp.picoseconds);
+		}
+		break;
+	case BLPAPI_DATATYPE_STRING:
+		with (const char *str[1U]) {
+			rc = blpapi_Element_getValueAsString(e, str, 0U);
+			if (rc) {
+				break;
+			}
+			fputs(*str, whither);
+		}
+		break;
+	default:
+		rc = -1;
+		break;
+	}
+	return rc;
 }
 
 static void
@@ -183,13 +257,7 @@ dump_rsp(const yuck_t argi[static 1U], blpapi_Message_t *msg)
 {
 	char *const *tops = argi->topic_args;
 	char *const *flds = argi->field_args;
-	blpapi_Element_t *els;
 
-	if (UNLIKELY((els = blpapi_Message_elements(msg)) == NULL)) {
-		goto nah;
-	}
-
-nah:
 	fputc('\n', stdout);
 	return;
 }
@@ -199,6 +267,7 @@ dump_pub(const yuck_t argi[static 1U], blpapi_Message_t *msg)
 {
 	char *const *tops = argi->topic_args;
 	char *const *flds = argi->field_args;
+	const size_t nflds = argi->field_nargs;
 	blpapi_Element_t *els;
 	blpapi_CorrelationId_t cid;
 	size_t ix;
@@ -214,6 +283,19 @@ dump_pub(const yuck_t argi[static 1U], blpapi_Message_t *msg)
 
 	ix--;
 	fputs(tops[ix], stdout);
+
+	if (UNLIKELY((els = blpapi_Message_elements(msg)) == NULL)) {
+		goto nop;
+	}
+
+	for (size_t i = 0U; i < nflds; i++) {
+		blpapi_Element_t *f;
+
+		fputc('\t', stdout);
+		if (!blpapi_Element_getElement(els, &f, flds[i], NULL)) {
+			dump_Element(f, stdout);
+		}
+	}
 nop:
 	fputc('\n', stdout);
 	return;
