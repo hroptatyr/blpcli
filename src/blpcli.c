@@ -471,6 +471,8 @@ sess_sta(blpapi_Session_t *sess, struct ctx_s *ctx)
 			break;
 		default:
 			/* hm? */
+			errno = 0, error("\
+Warning: session message other than GET/SUB received");
 			return -1;
 		}
 		break;
@@ -479,6 +481,8 @@ sess_sta(blpapi_Session_t *sess, struct ctx_s *ctx)
 	case ST_SVC:
 	default:
 		/* we're already in a session, just bog off */
+		errno = 0, error("\
+Warning: session message received but we are in a session already");
 		return -1;
 	}
 
@@ -523,6 +527,8 @@ svc_sta(blpapi_Session_t *sess, struct ctx_s *ctx)
 	case ST_FIN:
 	default:
 		/* do fuck all */
+		errno = 0, error("\
+Warning: service message received but we are past the session state");
 		return -1;
 	}
 
@@ -599,7 +605,6 @@ beef(blpapi_Event_t *e, blpapi_Session_t *sess, void *ctx)
 			static const char end[] = "SessionTerminated";
 			const char *msgstr = blpapi_Message_typeString(msg);
 
-
 			if (!strcmp(msgstr, sta)) {
 				/* yay!!! */
 				sess_sta(sess, ctx);
@@ -649,7 +654,8 @@ beef(blpapi_Event_t *e, blpapi_Session_t *sess, void *ctx)
 		break;
 	default:
 		/* uh oh */
-		printf("unknown event %u\n", typ);
+		errno = 0, error("\
+Warning: unknown event %u", typ);
 		break;
 	}
 	blpapi_MessageIterator_destroy(iter);
