@@ -33,6 +33,7 @@ blpcli_SOURCES += nifty.h
 blpcli_CPPFLAGS = $(AM_CPPFLAGS)
 blpcli_CPPFLAGS += $(blpapi_CFLAGS)
 blpcli_LDFLAGS = $(AM_LDFLAGS)
+blpcli_LDFLAGS += -lpthread
 blpcli_LDFLAGS += $(blpapi_LIBS)
 BUILT_SOURCES += blpcli.yucc
 
