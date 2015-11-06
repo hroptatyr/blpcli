@@ -595,6 +595,7 @@ beef(blpapi_Event_t *e, blpapi_Session_t *sess, void *ctx)
 	unsigned int typ;
 
 	if (UNLIKELY((iter = blpapi_MessageIterator_create(e)) == NULL)) {
+		LOG("NOMSG");
 		return;
 	}
 	switch ((typ = blpapi_Event_eventType(e))) {
