@@ -253,10 +253,10 @@ dump_Element(const blpapi_Element_t *e, FILE *whither)
 }
 
 static void
-dump_rsp(const yuck_t argi[static 1U], blpapi_Message_t *msg)
+dump_rsp(const yuck_t argi[static 1U], blpapi_Message_t *UNUSED(msg))
 {
-	char *const *tops = argi->topic_args;
-	char *const *flds = argi->field_args;
+	char *const *UNUSED(tops) = argi->topic_args;
+	char *const *UNUSED(flds) = argi->field_args;
 
 	fputc('\n', stdout);
 	return;
