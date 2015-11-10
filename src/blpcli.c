@@ -660,6 +660,7 @@ Warning: unknown event %u", typ);
 		break;
 	}
 	blpapi_MessageIterator_destroy(iter);
+	blpapi_Event_release(e);
 	return;
 }
 
