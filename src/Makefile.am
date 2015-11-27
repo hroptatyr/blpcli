@@ -37,6 +37,16 @@ blpcli_LDFLAGS += -lpthread
 blpcli_LDFLAGS += $(blpapi_LIBS)
 BUILT_SOURCES += blpcli.yucc
 
+bin_PROGRAMS += blp-um
+blp_um_SOURCES = blp-um.c blp-um.yuck
+blp_um_SOURCES += nifty.h
+blp_um_CPPFLAGS = $(AM_CPPFLAGS)
+blp_um_CPPFLAGS += $(blpapi_CFLAGS)
+blp_um_LDFLAGS = $(AM_LDFLAGS)
+blp_um_LDFLAGS += -lpthread
+blp_um_LDFLAGS += $(blpapi_LIBS)
+BUILT_SOURCES += blp-um.yucc
+
 
 ## yuck rule
 SUFFIXES += .yuck

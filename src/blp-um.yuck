@@ -1,0 +1,5 @@
+Usage: blp-um INSTR...
+
+Interface the bbcom server.
+
+  --beef=PORT           Write data to multicast 224.0.0.134:PORT
