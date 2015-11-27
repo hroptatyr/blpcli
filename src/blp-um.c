@@ -51,6 +51,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <math.h>
 #include <blpapi_correlationid.h>
 #include <blpapi_element.h>
 #include <blpapi_event.h>
@@ -61,6 +62,11 @@
 #include "nifty.h"
 
 #include "blp-um.yucc"
+
+typedef struct {
+	blpapi_Float64_t bid;
+	blpapi_Float64_t ask;
+} quo_t;
 
 struct ctx_s {
 	enum {
@@ -74,7 +80,10 @@ struct ctx_s {
 
 		ST_FIN,
 	} st;
-	const yuck_t *argi;
+	size_t ninstr;
+	char *const *instr;
+	quo_t *book;
+	uint8_t *touched;
 	int rc;
 };
 
@@ -124,112 +133,40 @@ unblock_sigs(void)
 	return;
 }
 
-static size_t
-dt_strf_d(char *restrict buf, size_t bsz, int days_since_epoch)
-{
-	const unsigned int bas = 19359U/*#days between 1917-01-00 and epoch*/;
-	unsigned int epo = days_since_epoch + bas;
-	unsigned int y, m, d;
-	unsigned int tmp;
-
-	/* start with a guess */
-	y = epo / 365U;
-	tmp = y * 365U + y / 4U;
-	if (UNLIKELY(tmp >= epo)) {
-		y--;
-		tmp = y * 365U + y / 4U;
-	}
-	/* repurpose tmp to hold the doy */
-	tmp = epo - tmp;
-	/* now the trimester algo to go from doy to m+d */
-	if ((tmp -= 1U + !(y % 4U)/*__leapp(y)*/) < 59U) {
-		/* 3rd trimester */
-		tmp += !(y % 4U);
-	} else if ((tmp += 2U) < 153U + 61U) {
-		/* 1st trimester */
-		;
-	} else {
-		/* 2nd trimester */
-		tmp += 30U;
-	}
-
-	m = 2 * tmp / 61U;
-	d = 2 * tmp % 61U;
-
-	m = m + 1 - (m >= 7U);
-	d = d / 2 + 1U;
-	y += 1917U;
-	return snprintf(buf, bsz, "%04u-%02u-%02u", y, m, d);
-}
-
-static size_t
-dt_strf_t(char *restrict buf, size_t bsz, unsigned int tim, unsigned int nsec)
-{
-	unsigned int M, S;
-
-	S = tim % 60U;
-	tim /= 60U;
-	M = tim % 60U;
-	tim /= 60U;
-	return snprintf(buf, bsz, "%02u:%02u:%02u.%09uZ", tim, M, S, nsec);
-}
-
 
 static const char *flds[] = {
 	"BID", "ASK",
 };
 
-static size_t
-cpyel(char *restrict buf, size_t bsz, const blpapi_Element_t *e)
+static void
+send_quo(const char *instr, quo_t q)
 {
-	int rc = 0;
+	char buf[1280U];
+	size_t len;
 
-	switch (blpapi_Element_datatype(e)) {
-		union {
-			blpapi_Int32_t i32;
-			blpapi_Int64_t i64;
-			blpapi_Float32_t f32;
-			blpapi_Float64_t f64;
-			blpapi_Datetime_t dt;
-			blpapi_HighPrecisionDatetime_t hp;
-		} tmp;
-
-	case BLPAPI_DATATYPE_INT32:
-		rc = blpapi_Element_getValueAsInt32(e, &tmp.i32, 0U);
-		rc = snprintf(buf, bsz, "%i", tmp.i32);
-		break;
-	case BLPAPI_DATATYPE_INT64:
-		rc = blpapi_Element_getValueAsInt64(e, &tmp.i64, 0U);
-		rc = snprintf(buf, bsz, "%lli", tmp.i64);
-		break;
-	case BLPAPI_DATATYPE_FLOAT32:
-		rc = blpapi_Element_getValueAsFloat32(e, &tmp.f32, 0U);
-		rc = snprintf(buf, bsz, "%f", tmp.f32);
-		break;
-	case BLPAPI_DATATYPE_FLOAT64:
-		rc = blpapi_Element_getValueAsFloat64(e, &tmp.f64, 0U);
-		rc = snprintf(buf, bsz, "%f", tmp.f64);
-		break;
-	case BLPAPI_DATATYPE_DATETIME:
-	case BLPAPI_DATATYPE_DATE:
-	case BLPAPI_DATATYPE_TIME:
-		break;
-	default:
-		break;
+	memcpy(buf, instr, (len = strlen(instr)));
+	buf[len++] = '\t';
+	if (!isnan(q.bid)) {
+		len += snprintf(buf + len, sizeof(buf) - len, "%f", q.bid);
 	}
-	return rc;
+	buf[len++] = '\t';
+	if (!isnan(q.ask)) {
+		len += snprintf(buf + len, sizeof(buf) - len, "%f", q.ask);
+	}
+	/* and finalise */
+	buf[len++] = '\n';
+	buf[len] = '\0';
+	fputs(buf, stdout);
+	return;
 }
 
 static void
-dump_pub(const yuck_t argi[static 1U], blpapi_Message_t *msg)
+dump_pub(const struct ctx_s ctx[static 1U], blpapi_Message_t *msg)
 {
-	char buf[1280U];
-	char *const *tops = argi->args;
 	blpapi_Element_t *els;
 	blpapi_Element_t *el;
 	blpapi_CorrelationId_t cid;
 	size_t ix;
-	size_t len;
 
 	cid = blpapi_Message_correlationId(msg, 0);
 	if (UNLIKELY(cid.valueType != BLPAPI_CORRELATION_TYPE_INT)) {
@@ -244,17 +181,19 @@ dump_pub(const yuck_t argi[static 1U], blpapi_Message_t *msg)
 	if (UNLIKELY((els = blpapi_Message_elements(msg)) == NULL)) {
 		goto nop;
 	}
-	memcpy(buf, tops[ix], (len = strlen(tops[ix])));
-	buf[len++] = '\t';
 
 	if (!blpapi_Element_getElement(els, &el, flds[0U], NULL)) {
-		len += cpyel(buf + len, sizeof(buf) - len, el);
+		blpapi_Element_getValueAsFloat64(el, &ctx->book[ix].bid, 0U);
+		ctx->touched[ix] = 1U;
 	}
 	if (!blpapi_Element_getElement(els, &el, flds[1U], NULL)) {
-		len += cpyel(buf + len, sizeof(buf) - len, el);
+		blpapi_Element_getValueAsFloat64(el, &ctx->book[ix].ask, 0U);
+		ctx->touched[ix] = 1U;
 	}
-	/* and finalise */
-	buf[len++] = '\n';
+	if (!isnan(ctx->book[ix].bid && !isnan(ctx->book[ix].ask))) {
+		send_quo(ctx->instr[ix], ctx->book[ix]);
+		ctx->touched[ix] = 0U;
+	}
 
 nop:
 	return;
@@ -263,39 +202,26 @@ nop:
 static void
 dump_evs(const struct ctx_s ctx[static 1U], blpapi_MessageIterator_t *iter)
 {
-	static int today;
-	static char stmp[32U];
 	blpapi_Message_t *msg;
-	const yuck_t *argi = ctx->argi;
 
-	with (struct timespec tsp) {
-		int tspd;
-		unsigned int tspt;
-
-		clock_gettime(CLOCK_REALTIME, &tsp);
-		tspd = tsp.tv_sec / 86400;
-		tspt = tsp.tv_sec % 86400;
-		if (UNLIKELY(today < tspd)) {
-			/* oh no, we need to work a bit */
-			today = tspd;
-			dt_strf_d(stmp, sizeof(stmp), tspd);
-			stmp[10U] = 'T';
-		}
-		/* always fill in time-of-day and nanos */
-		dt_strf_t(stmp + 11U, sizeof(stmp) - 11U, tspt, tsp.tv_nsec);
-	}
-
+	memset(ctx->book, -1, sizeof(*ctx->book) * ctx->ninstr);
+	memset(ctx->touched, 0, sizeof(*ctx->touched) * ctx->ninstr);
 	while (!blpapi_MessageIterator_next(iter, &msg)) {
-		fputs(stmp, stdout);
-		fputc('\t', stdout);
-		dump_pub(argi, msg);
+		dump_pub(ctx, msg);
+	}
+	/* send the touched ones now */
+	for (size_t i = 0U; i < ctx->ninstr; i++) {
+		if (!ctx->touched[i]) {
+			continue;
+		}
+		send_quo(ctx->instr[i], ctx->book[i]);
 	}
 	return;
 }
 
 
 static int
-svc_sta_sub(blpapi_Session_t *s, const struct yuck_s argi[static 1U])
+svc_sta_sub(blpapi_Session_t *s, char *const *instr, size_t ninstr)
 {
 	blpapi_SubscriptionList_t *subs;
 	const char *opts[] = {};
@@ -307,8 +233,8 @@ Error: cannot instantiate subscriptions");
 	}
 
 	/* subscribe */
-	for (size_t i = 0U; i < argi->nargs; i++) {
-		const char *top = argi->args[i];
+	for (size_t i = 0U; i < ninstr; i++) {
+		const char *top = instr[i];
 		blpapi_CorrelationId_t cid = {
 			.size = sizeof(cid),
 			.valueType = BLPAPI_CORRELATION_TYPE_INT,
@@ -377,11 +303,8 @@ sess_end(blpapi_Session_t *UNUSED(sess), struct ctx_s *ctx)
 static int
 svc_sta(blpapi_Session_t *sess, struct ctx_s *ctx)
 {
-	const yuck_t *argi;
-
 	switch (ctx->st) {
 	case ST_SES:
-		argi = ctx->argi;
 		break;
 	case ST_UNK:
 	case ST_SVC:
@@ -393,7 +316,7 @@ Warning: service message received but we are past the session state");
 		return -1;
 	}
 
-	if (svc_sta_sub(sess, (const struct yuck_s*)argi) < 0) {
+	if (svc_sta_sub(sess, ctx->instr, ctx->ninstr) < 0) {
 		return -1;
 	}
 	/* success */
@@ -502,7 +425,7 @@ int
 main(int argc, char *argv[])
 {
 	static yuck_t argi[1U];
-	static struct ctx_s ctx = {.argi = argi};
+	static struct ctx_s ctx;
 	blpapi_Session_t *sess;
 	int rc = 0;
 
@@ -514,6 +437,10 @@ Fatal: cannot parse options");
 		rc = 1;
 		goto out;
 	}
+
+	ctx.instr = argi->args, ctx.ninstr = argi->nargs;
+	ctx.book = malloc(argi->nargs * sizeof(*ctx.book));
+	ctx.touched = malloc(argi->nargs * sizeof(*ctx.touched));
 
 	/* we can't do with interruptions */
 	block_sigs();
@@ -576,6 +503,10 @@ out:
 		blpapi_Session_destroy(sess);
 		sess = NULL;
 	}
+	if (ctx.book) {
+		free(ctx.book);
+	}
+
 	yuck_free(argi);
 	return rc;
 }
