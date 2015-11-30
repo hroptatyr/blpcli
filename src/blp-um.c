@@ -178,46 +178,26 @@ mc6_socket(void)
 }
 
 static int
-mc6_set_dest(
-	struct sockaddr_in6 *restrict s,
-	const char *addr, short unsigned int port, const char *nicn)
+mc6_set_pub(int s, const char *addr, short unsigned int port, const char *iface)
 {
-	sa_family_t fam = AF_INET6;
-
-	/* we pick link-local here for simplicity */
-	if (inet_pton(fam, addr, &s->sin6_addr) < 0) {
-		return -1;
-	}
-	/* set destination address */
-	s->sin6_family = fam;
-	/* port as well innit */
-	s->sin6_port = htons(port);
-	/* set the flowinfo */
-	s->sin6_flowinfo = 0;
-	/* scope id */
-	if (nicn != NULL) {
-		s->sin6_scope_id = if_nametoindex(nicn);
-	} else {
-		s->sin6_scope_id = 0U;
-	}
-	return 0;
-}
-
-static int
-mc6_set_pub(int s, struct sockaddr_in6 *dst)
-{
-	struct sockaddr_in6 sa6 = {
+	struct sockaddr_in6 sa = {
 		.sin6_family = AF_INET6,
 		.sin6_addr = IN6ADDR_ANY_INIT,
-		.sin6_port = 0,
+		.sin6_port = htons(port),
+		.sin6_flowinfo = 0,
 		.sin6_scope_id = 0,
 	};
 
-	/* as a courtesy to tools bind the channel */
-	if (bind(s, (struct sockaddr*)&sa6, sizeof(sa6)) < 0) {
+	/* we pick link-local here for simplicity */
+	if (inet_pton(AF_INET6, addr, &sa.sin6_addr) < 0) {
 		return -1;
 	}
-	return connect(s, (struct sockaddr*)dst, sizeof(*dst));
+	/* scope id */
+	if (iface != NULL) {
+		sa.sin6_scope_id = if_nametoindex(iface);
+	}
+	/* and do the connect() so we can use send() instead of sendto() */
+	return connect(s, (struct sockaddr*)&sa, sizeof(sa));
 }
 
 static int
@@ -546,20 +526,11 @@ Fatal: cannot parse options");
 Error: cannot create multicast socket");
 		rc = 1;
 		goto out;
-	}
-	with (struct sockaddr_in6 sa) {
-		if (UNLIKELY(mc6_set_dest(
-				     &sa, MCAST_ADDR, MCAST_PORT, NULL) < 0)) {
-			error("\
-Error: cannot set multicast destination");
-			rc = 1;
-			goto out;
-		} else if (UNLIKELY(mc6_set_pub(sok, &sa) < 0)) {
+	} else if (mc6_set_pub(sok, MCAST_ADDR, MCAST_PORT, NULL) < 0) {
 			error("\
 Error: cannot activate publishing mode on socket %d", sok);
 			rc = 1;
 			goto out;
-		}
 	}
 	/* this can be considered ready */
 	ctx.sok = sok;
