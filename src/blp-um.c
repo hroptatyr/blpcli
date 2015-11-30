@@ -49,7 +49,9 @@
 #include <time.h>
 #include <pthread.h>
 #include <netinet/in.h>
+#include <net/if.h>
 #include <sys/socket.h>
+#include <fcntl.h>
 #include <arpa/inet.h>
 #include <math.h>
 #include <blpapi_correlationid.h>
@@ -62,6 +64,9 @@
 #include "nifty.h"
 
 #include "blp-um.yucc"
+
+#define MCAST_ADDR	"ff05::134"
+#define MCAST_PORT	7878
 
 typedef struct {
 	blpapi_Float64_t bid;
@@ -85,6 +90,7 @@ struct ctx_s {
 	quo_t *book;
 	uint8_t *touched;
 	int rc;
+	int sok;
 };
 
 #define LOG(x)		fputs(x, stderr)
@@ -134,12 +140,100 @@ unblock_sigs(void)
 }
 
 
+/* socket goodies */
+static inline void
+setsock_nonblock(int sock)
+{
+	int opts;
+
+	/* get former options */
+	opts = fcntl(sock, F_GETFL);
+	if (opts < 0) {
+		return;
+	}
+	opts |= O_NONBLOCK;
+	(void)fcntl(sock, F_SETFL, opts);
+	return;
+}
+
+static int
+mc6_socket(void)
+{
+	volatile int s;
+
+	/* try v6 first */
+	if ((s = socket(PF_INET6, SOCK_DGRAM, IPPROTO_IP)) < 0) {
+		return -1;
+	}
+
+#if defined IPV6_V6ONLY
+	{
+		int yes = 1;
+		setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes));
+	}
+#endif	/* IPV6_V6ONLY */
+	/* be less blocking */
+	setsock_nonblock(s);
+	return s;
+}
+
+static int
+mc6_set_dest(
+	struct sockaddr_in6 *restrict s,
+	const char *addr, short unsigned int port, const char *nicn)
+{
+	sa_family_t fam = AF_INET6;
+
+	/* we pick link-local here for simplicity */
+	if (inet_pton(fam, addr, &s->sin6_addr) < 0) {
+		return -1;
+	}
+	/* set destination address */
+	s->sin6_family = fam;
+	/* port as well innit */
+	s->sin6_port = htons(port);
+	/* set the flowinfo */
+	s->sin6_flowinfo = 0;
+	/* scope id */
+	if (nicn != NULL) {
+		s->sin6_scope_id = if_nametoindex(nicn);
+	} else {
+		s->sin6_scope_id = 0U;
+	}
+	return 0;
+}
+
+static int
+mc6_set_pub(int s, struct sockaddr_in6 *dst)
+{
+	struct sockaddr_in6 sa6 = {
+		.sin6_family = AF_INET6,
+		.sin6_addr = IN6ADDR_ANY_INIT,
+		.sin6_port = 0,
+		.sin6_scope_id = 0,
+	};
+
+	/* as a courtesy to tools bind the channel */
+	if (bind(s, (struct sockaddr*)&sa6, sizeof(sa6)) < 0) {
+		return -1;
+	}
+	return connect(s, (struct sockaddr*)dst, sizeof(*dst));
+}
+
+static int
+mc6_unset_pub(int UNUSED(s))
+{
+	/* do fuckall */
+	return 0;
+}
+
+
 static const char *flds[] = {
 	"BID", "ASK",
 };
 
 static void
-send_quo(const char *instr, quo_t q)
+send_quo(int sok, const char *instr, quo_t q)
 {
 	char buf[1280U];
 	size_t len;
@@ -156,7 +250,7 @@ send_quo(const char *instr, quo_t q)
 	/* and finalise */
 	buf[len++] = '\n';
 	buf[len] = '\0';
-	fputs(buf, stdout);
+	send(sok, buf, len, 0);
 	return;
 }
 
@@ -191,7 +285,7 @@ dump_pub(const struct ctx_s ctx[static 1U], blpapi_Message_t *msg)
 		ctx->touched[ix] = 1U;
 	}
 	if (!isnan(ctx->book[ix].bid && !isnan(ctx->book[ix].ask))) {
-		send_quo(ctx->instr[ix], ctx->book[ix]);
+		send_quo(ctx->sok, ctx->instr[ix], ctx->book[ix]);
 		ctx->touched[ix] = 0U;
 	}
 
@@ -214,7 +308,7 @@ dump_evs(const struct ctx_s ctx[static 1U], blpapi_MessageIterator_t *iter)
 		if (!ctx->touched[i]) {
 			continue;
 		}
-		send_quo(ctx->instr[i], ctx->book[i]);
+		send_quo(ctx->sok, ctx->instr[i], ctx->book[i]);
 	}
 	return;
 }
@@ -426,7 +520,8 @@ main(int argc, char *argv[])
 {
 	static yuck_t argi[1U];
 	static struct ctx_s ctx;
-	blpapi_Session_t *sess;
+	blpapi_Session_t *sess = NULL;
+	int sok = -1;
 	int rc = 0;
 
 	/* parse options, set up longjmp target and
@@ -444,6 +539,30 @@ Fatal: cannot parse options");
 
 	/* we can't do with interruptions */
 	block_sigs();
+
+	/* open multicast channel */
+	if (UNLIKELY((sok = mc6_socket()) < 0)) {
+		error("\
+Error: cannot create multicast socket");
+		rc = 1;
+		goto out;
+	}
+	with (struct sockaddr_in6 sa) {
+		if (UNLIKELY(mc6_set_dest(
+				     &sa, MCAST_ADDR, MCAST_PORT, NULL) < 0)) {
+			error("\
+Error: cannot set multicast destination");
+			rc = 1;
+			goto out;
+		} else if (UNLIKELY(mc6_set_pub(sok, &sa) < 0)) {
+			error("\
+Error: cannot activate publishing mode on socket %d", sok);
+			rc = 1;
+			goto out;
+		}
+	}
+	/* this can be considered ready */
+	ctx.sok = sok;
 
 	/* get ourselves a session handle */
 	with (blpapi_SessionOptions_t *opt) {
@@ -498,6 +617,10 @@ Error: cannot start session");
 
 out:
 	unblock_sigs();
+	if (sok >= 0) {
+		mc6_unset_pub(sok);
+		close(sok);
+	}
 	if (sess != NULL) {
 		blpapi_Session_stop(sess);
 		blpapi_Session_destroy(sess);
