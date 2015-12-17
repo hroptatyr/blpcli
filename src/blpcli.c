@@ -510,6 +510,7 @@ sess_end(blpapi_Session_t *UNUSED(sess), struct ctx_s *ctx)
 	/* indicate success */
 	LOG("ST<-FIN\n");
 	ctx->st = ST_FIN;
+	kill(0, SIGQUIT);
 	return 0;
 }
 
